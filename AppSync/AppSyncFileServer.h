@@ -1,20 +1,16 @@
-#ifndef BleFileTransferH
-#define BleFileTransferH
+#ifndef AppSyncFileServerH
+#define AppSyncFileServerH
 
-#include "BtStackAdapter.h"
+#include "btstack/BtStackAdapter.h"
+#include "AppSyncFileUtils.h"
+
 #include <vector>
 #include <functional>
 #include <mutex>
 
-#define DEBUG_APPSYNC_FILE_CHANNEL
-
-#define FT_REASON_SUCCESS		0x00
-#define FT_DATA_NOT_SENT		0x01
-#define FT_BAD_DATA_CTRL_FORMAT	0x02
-
 namespace Ble {
 
-	class TBleFileTransfer {
+	class AppSyncFileServer {
 		public:
 			enum class State {
 				stopped,
@@ -30,12 +26,12 @@ namespace Ble {
 
 			using OnEventReceivedCb = std::function<void(bool completed, bool error, uint8_t reason)>;
 
-			TBleFileTransfer(btstack::TBtStackAdapter& adapter,
+			AppSyncFileServer(btstack::TBtStackAdapter& adapter,
 							 uint16_t mtu,
 							 const std::string& filename,
 							 std::vector<uint8_t>& bytes,
 							 OnEventReceivedCb onEvent);
-			~TBleFileTransfer();
+			~AppSyncFileServer();
 
 			bool Start();
 			void Update();
@@ -62,14 +58,12 @@ namespace Ble {
 			void Abort();
 			void Continue();
 			void SendDataChunk();
-			uint8_t CalculateChecksum(const uint8_t* bytes, size_t len);
+
 			bool CheckWriteCtrlPacket(const uint8_t* bytes, uint16_t len);
 
-			uint32_t Crc32(uint32_t crc, const void *buf, size_t buf_size);
 			bool SendFileRequest();
 			void SendFileCancel();
 	};
 
 }
 #endif
-
