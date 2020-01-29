@@ -2,8 +2,6 @@
 #define AppSyncFileServerH
 
 #include "btstack/BtStackAdapter.h"
-#include "AppSyncFileUtils.h"
-
 #include <vector>
 #include <functional>
 #include <mutex>
@@ -24,7 +22,7 @@ namespace Ble {
 				finished,
 			};
 
-			using OnEventReceivedCb = std::function<void(bool completed, bool error, uint8_t reason)>;
+			using OnEventReceivedCb = std::function<void(bool completed, bool error)>;
 
 			AppSyncFileServer(btstack::TBtStackAdapter& adapter,
 							 uint16_t mtu,
@@ -58,9 +56,6 @@ namespace Ble {
 			void Abort();
 			void Continue();
 			void SendDataChunk();
-
-			bool CheckWriteCtrlPacket(const uint8_t* bytes, uint16_t len);
-
 			bool SendFileRequest();
 			void SendFileCancel();
 	};

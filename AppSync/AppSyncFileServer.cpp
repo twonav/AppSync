@@ -4,6 +4,13 @@
 #include <sstream>
 #include <iomanip>
 
+#include "AppSyncFTNDPacket.h"
+#include "AppSyncFTNCPacket.h"
+#include "AppSyncFTWCPacket.h"
+#include "AppSyncCrc32.h"
+
+#define NOTIFICATION_BLE_OVERHEAD	3
+
 using namespace Ble;
 using namespace btstack;
 
@@ -59,7 +66,7 @@ void AppSyncFileServer::Update() {
 		case AppSyncFileServer::State::transfer_complete: {
 			bool completed = true;
 			bool error = false;
-			onEvent(completed, error, FT_REASON_SUCCESS);
+			onEvent(completed, error);
 			break;
 		}
 	}
@@ -89,18 +96,19 @@ void AppSyncFileServer::SendDataChunk() {
 		std::string log = "PERIPHERAL: FT: Sending Data: ";
 		log += std::to_string(bytesSent) + "/" + std::to_string(fileBytesToSend.size());
 		RegistraGPS(log.c_str(), true);
-
-		size_t framesize = bytesToSend + 2;
-		frameToSend.resize(framesize); // 2 for ctrl bytes
-		frameToSend[NOTIFICATION_DATA_PACKET_NUMBER_FIELD] = dataChunkNumber & 0xFF;
-		memcpy(&frameToSend[NOTIFICATION_DATA_DATA_FIELD], &fileBytesToSend[bytesSent], bytesToSend);
-		frameToSend[framesize-1] = TBleFileUtils::CalculateChecksum(&frameToSend[0], framesize);
+		
+		TAppSyncFTNDPacket packetToSend;
+		TAppSyncFTNDPacket::FTNDData data;
+		data.packetNumber = dataChunkNumber & 0xFF;
+		data.fileBytes = &fileBytesToSend[bytesSent];
+		data.fileBytesLen = bytesSent;
+		packetToSend.Encode(frameToSend, data);
 
 		state = AppSyncFileServer::State::waiting_data_sent;
 		adapter.sendGattServerFileData(OnGattServerFileDataSent,
 									   this,
 									   &frameToSend[0],
-									   static_cast<uint16_t>(framesize));
+									   static_cast<uint16_t>(frameToSend.size()));
 
 		dataChunkNumber++;
 	}
@@ -113,131 +121,96 @@ void AppSyncFileServer::SendDataChunk() {
 void AppSyncFileServer::OnGattServerFileCtrlSent(void* context, bool success) {
 	AppSyncFileServer* fileTransfer = static_cast <AppSyncFileServer*>(context);
 	//success ? fileTransfer->Continue() : fileTransfer->Abort(); // TODO: Remove!
-	fileTransfer->onEvent(false , !success, success ? FT_REASON_SUCCESS : FT_DATA_NOT_SENT);
+	fileTransfer->onEvent(false , !success);
 }
 
 void AppSyncFileServer::OnGattServerFileDataSent(void* context, bool success) {
 	AppSyncFileServer* fileTransfer = static_cast <AppSyncFileServer*>(context);
 	success ? fileTransfer->Continue() : fileTransfer->Abort();
-	fileTransfer->onEvent(false , !success, success ? FT_REASON_SUCCESS : FT_DATA_NOT_SENT);
+	fileTransfer->onEvent(false , !success);
 }
 
 void AppSyncFileServer::OnWriteCtrlRcvd(void* context, const uint8_t* bytes, uint16_t len) {
 	AppSyncFileServer* fileTransfer = static_cast <AppSyncFileServer*>(context);
 
-	bool completed = false;
-	bool error = (bytes == nullptr);
-	uint8_t reason = FT_BAD_DATA_CTRL_FORMAT;
 	AppSyncFileServer::State newState = AppSyncFileServer::State::sending_data;
 
+	bool completed {false};
+	TAppSyncFTWCPacket packet;
+	TAppSyncFTWCPacket::FTWCData data;
+	bool error = !packet.Decode(data, bytes, len);
 	if(!error) {
 		std::stringstream log;
 		log << "PERIPHERAL: GattServer: Len [" << std::to_string(len) << "] firstByte [";
 		log << std::hex << std::setfill('0') << std::uppercase << std::setw(2)  << static_cast<int>(bytes[0]) << "]";
 		RegistraGPS(log.str().c_str());
 
-		bool check = fileTransfer->CheckWriteCtrlPacket(bytes, len);
-		if(check) {
-			uint8_t ackField = bytes[WRITE_CTRL_ACK_FIELD];
-			uint8_t action = bytes[WRITE_CTRL_ACTION_FIELD];
-			reason =  bytes[WRITE_CTRL_REASON_FIELD];
-			memcpy(&fileTransfer->lastPacketConfirmed, &bytes[WRITE_CTRL_PACKET_NUMBER_FIELD], 4);
-
-			switch(ackField) {
-				case ACK_CODE:
-				case NACK_CODE: {
-					switch(action) {
-						case ACTION_COMPLETED: {
-							completed = true;
-							newState = AppSyncFileServer::State::finished;
-							break;
-						}
-						case ACTION_STOP: {
-							error = true;
-							newState = AppSyncFileServer::State::failed;
-							break;
-						}
-						case ACTION_START: {
-							newState = AppSyncFileServer::State::sending_data;
-							break;
-						}
-						case ACTION_CONTINUE: {
-							newState = AppSyncFileServer::State::sending_data;
-							if(ackField == NACK_CODE) {
-								error = false;
-								fileTransfer->dataChunkNumber = fileTransfer->lastPacketConfirmed;
-							}
-							break;
-						}
-						default: {
-							newState = AppSyncFileServer::State::failed;
-							error = true;
-							reason = FT_BAD_DATA_CTRL_FORMAT;
-							break;
-						}
-					}
+		if(data.ack) {
+			switch(data.action) {
+				case TAppSyncFTWCPacket::Action::completed:
+					completed = true;
+					newState = AppSyncFileServer::State::finished;
 					break;
-				}
-				default: {
+				case TAppSyncFTWCPacket::Action::stop:
+					error = true; // INFO: To Force error. Maybe not clear...
 					newState = AppSyncFileServer::State::failed;
-					error = true;
-					reason = FT_BAD_DATA_CTRL_FORMAT;
 					break;
-				}
+				case TAppSyncFTWCPacket::Action::start:
+					newState = AppSyncFileServer::State::sending_data;
+					break;
+				case TAppSyncFTWCPacket::Action::continue_transfer:
+					newState = AppSyncFileServer::State::sending_data;
+					break;
+
+			default:
+				newState = AppSyncFileServer::State::failed;
+				error = true;
+				break;
 			}
 		}
+		else {
+			if(data.action == TAppSyncFTWCPacket::Action::continue_transfer) {
+				error = true;
+				fileTransfer->dataChunkNumber = fileTransfer->lastPacketConfirmed;
+			}
+		};
 	}
 
 	fileTransfer->state = newState;
-	fileTransfer->onEvent(completed, error, reason);
+	fileTransfer->onEvent(completed, error);
 }
 
-bool AppSyncFileServer::CheckWriteCtrlPacket(const uint8_t* bytes, uint16_t len) {
-	bool checkOk = (len == WRITE_CTRL_PACKET_LENGTH &&
-					bytes[WRITE_CTRL_CHCKSM_FIELD] == TBleFileUtils::CalculateChecksum(bytes, len));
-
-	return checkOk;
-}
-
-bool AppSyncFileServer::SendFileRequest()
-{
-	size_t filenameLen = strlen(fileNameToSend.data());
-	size_t packetLen = NOTIFICAITON_CTRL_INCOMING_FILE_FIXED_LENGTH + filenameLen;
-
-	if(packetLen > (mtu - NOTIFICATION_BLE_OVERHEAD)) {
-		// FIXME
-		RegistraGPS("PERIPHERAL: FT: Notification Ctrl over MTU. Unhandled case", true);
-		return false;
-	}
-
+bool AppSyncFileServer::SendFileRequest() {
 	state = AppSyncFileServer::State::waiting_confirmation;
 	dataChunkNumber = 0;
 
-	uint32_t nChunks = fileBytesToSend.size() / mtu;
-	uint32_t crc32 = TBleFileUtils::Crc32(CRC32_INIT, &fileBytesToSend[0], fileBytesToSend.size());
+	TAppSyncCrc32 crc32;
+	TAppSyncFTNCPacket packet;
+	TAppSyncFTNCPacket::FTNCData data;
+	data.action = TAppSyncFTNCPacket::Action::request;
+	data.fileName = fileNameToSend;
+	data.numPackets = fileBytesToSend.size() / mtu;
+	data.crc32 = crc32.Calculate(crc32.CRC32_INIT,
+								 &fileBytesToSend[0],
+								 fileBytesToSend.size());
 
-	std::vector<uint8_t> frame;
-	frame.resize(packetLen);
-	frame[NOTIFICAITON_CTRL_MSG_TYPE_FIELD] = NOTIFICAITON_CTRL_FILE_TRANSFER_REQUEST;
-	memcpy(&frame[NOTIFICAITON_CTRL_PACKET_NUMBER_FIELD], &nChunks, 4);
-	memcpy(&frame[NOTIFICAITON_CTRL_CRC32_FIELD], &crc32, 4);
-	memcpy(&frame[NOTIFICAITON_CTRL_FILENAME_LEN_FIELD], &filenameLen, 2);
-	memcpy(&frame[NOTIFICAITON_CTRL_FILENAME_DATA_FIELD], fileNameToSend.data(), filenameLen);
-	frame[NOTIFICAITON_CTRL_FILENAME_DATA_FIELD + filenameLen] = TBleFileUtils::CalculateChecksum(&frame[0], frame.size());
-
-	adapter.sendGattServerFileCtrl(OnGattServerFileCtrlSent, this, &frame[0], static_cast<uint16_t>(frame.size()));
+	packet.EncodeFileRequest(frameToSend, data);
+	adapter.sendGattServerFileCtrl(OnGattServerFileCtrlSent,
+								   this,
+								   &frameToSend[0],
+								   static_cast<uint16_t>(frameToSend.size()));
 
 	return true;
 }
 
-void AppSyncFileServer::SendFileCancel()
-{
+void AppSyncFileServer::SendFileCancel() {
 	state = AppSyncFileServer::State::waiting_cancel_confirmation;
 	dataChunkNumber = 0;
 
-	std::vector<uint8_t> frame;
-	frame.resize(2);
-	frame[0] = NOTIFICAITON_CTRL_FILE_TRANSFER_CANCEL;
-	frame[1] = TBleFileUtils::CalculateChecksum(&frame[0], static_cast<uint16_t>(frame.size()));
-	adapter.sendGattServerFileCtrl(OnGattServerFileCtrlSent, this, &frame[0], static_cast<uint16_t>(frame.size()));
+	TAppSyncFTNCPacket packet;
+	packet.EncodeFileCancel(frameToSend);
+	adapter.sendGattServerFileCtrl(OnGattServerFileCtrlSent,
+								   this,
+								   &frameToSend[0],
+								   static_cast<uint16_t>(frameToSend.size()));
 }

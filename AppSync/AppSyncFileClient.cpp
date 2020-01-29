@@ -4,11 +4,16 @@
 #include <string>
 #include "registra_gps.h"
 
+#include "AppSyncFTNDPacket.h"
+#include "AppSyncFTNCPacket.h"
+#include "AppSyncFTWCPacket.h"
+
 #define LOG_TAG "PERIPHERAL: FR: "
+
+#define ACK_CTRL_PACKET_PERIOD				64
 
 using namespace btstack;
 using namespace Ble;
-
 
 AppSyncFileClient::AppSyncFileClient()
 {
@@ -32,79 +37,83 @@ void AppSyncFileClient::OnWriteCtrlSent(void* context, bool success) {
 bool AppSyncFileClient::ProcessCtrlPacket(const uint8_t* bytes, uint16_t bytesLen) {
 	std::string error;
 
-	bool isValid = IsPacketValid(bytes, bytesLen, error);
-	if(!isValid) {
-		// TODO: Handle error anyway?
-		std::string log = LOG_TAG + error;
-		RegistraGPS(log.c_str(), true);
-		return false;
-	}
+	TAppSyncFTNCPacket packet;
+	TAppSyncFTNCPacket::FTNCData data;
 
-	bool processed = false;
-	uint8_t msgType = bytes[NOTIFICAITON_CTRL_MSG_TYPE_FIELD];
-	if(msgType == NOTIFICAITON_CTRL_FILE_TRANSFER_REQUEST &&
-			bytesLen >= NOTIFICAITON_CTRL_INCOMING_FILE_FIXED_LENGTH)
-	{
-		size_t incomingFileNameLen;
-		memcpy(&incomingChunks, &bytes[NOTIFICAITON_CTRL_PACKET_NUMBER_FIELD], 4);
-		memcpy(&incomingFileCrc32, &bytes[NOTIFICAITON_CTRL_CRC32_FIELD], 4);
-		memcpy(&incomingFileNameLen, &bytes[NOTIFICAITON_CTRL_FILENAME_LEN_FIELD], 2);
-		incomingFileName = std::string(reinterpret_cast<const char*>(&bytes[NOTIFICAITON_CTRL_FILENAME_DATA_FIELD]),
-									   incomingFileNameLen);
+	bool decoded = packet.Decode(data, bytes, bytesLen);
+	if(decoded) {
+		incomingChunks = data.numPackets;
+		incomingFileCrc32 = data.crc32;
+		incomingFileName = data.fileName;
 		state = AppSyncFileClient::State::incoming_file_request;
-		processed = true;
-	}
-	else if(msgType == NOTIFICAITON_CTRL_FILE_TRANSFER_CANCEL)
-	{
-		// TODO: Abort file transfer
-		Reset();
-		processed = true;
 	}
 	else {
-		// TODO: Handle incorrect message type?
 		std::string log = LOG_TAG + std::string("Incorrect Message Type");
 		RegistraGPS(log.c_str(), true);
+		state = AppSyncFileClient::State::packet_error;
 	}
 
-	return processed;
+	// TODO: OnEvent!!!
+
+	return decoded;
 }
 
 bool AppSyncFileClient::ProcessDataPacket(const uint8_t* bytes, uint16_t bytesLen) {
 	std::string error;
-	bool isValid = IsPacketValid(bytes, bytesLen, error);
-	if(!isValid) {
-		// TODO: Handle error anyway?
-		std::string log = LOG_TAG + error;
-		RegistraGPS(log.c_str(), true);
-		return false;
-	}
 
-	uint32_t expectedChunkNum = (lastChunkRecieved + 1);
-	uint8_t chunkNum = bytes[NOTIFICATION_DATA_PACKET_NUMBER_FIELD];
-	if(chunkNum == (expectedChunkNum & 0xFF)) {
-		if(chunkNum % ACK_CTRL_PACKET_PERIOD == 0) {
-			// TODO: Send ACK Ctrl
+	TAppSyncFTNDPacket packet;
+	TAppSyncFTNDPacket::FTNDData data;
+
+	bool decoded = packet.Decode(data, bytes, bytesLen);
+	if(decoded) {
+		uint32_t expectedPacketNum = (lastPacketRecieved + 1);
+		if(data.packetNumber == (expectedPacketNum & 0xFF)) {
+			incomingFileBuffer.insert(incomingFileBuffer.end(),
+									  &data.fileBytes[0],
+									  &data.fileBytes[data.fileBytesLen - 1]);
+			lastPacketRecieved = expectedPacketNum;
+
+			if(incomingChunks - 1 == lastPacketRecieved) {
+				state = AppSyncFileClient::State::file_complete;
+			}
 		}
-		incomingFileBuffer.insert(incomingFileBuffer.end(), &bytes[NOTIFICATION_DATA_DATA_FIELD], &bytes[bytesLen - 1]);
-		lastChunkRecieved = expectedChunkNum;
 	}
 	else {
-		// TODO: Send NACK + (recievedChunks + 1)
-	};
+		std::string log = LOG_TAG + error;
+		RegistraGPS(log.c_str(), true);
+		state = AppSyncFileClient::State::rollback;
+	}
 
-	return true;
+	// TODO: OnEvent!!!
+
+	return decoded;
 }
 
 void AppSyncFileClient::Update()
 {
 	switch(state) {
 		case AppSyncFileClient::State::stopped:
+			break;
 		case AppSyncFileClient::State::incoming_file_request:
+			state = AppSyncFileClient::State::recieving_file;
 			AuthorizeTransfer();
 			break;
-		case AppSyncFileClient::State::recieving_file:
+		case AppSyncFileClient::State::recieving_file: {
+			if(lastPacketRecieved % ACK_CTRL_PACKET_PERIOD == 0) {
+				ContinueTransfer(lastPacketRecieved);
+			}
+			break;
+		}
+		case AppSyncFileClient::State::rollback:
+			RollbackTransfer(lastPacketRecieved +1);
+			break;
 		case AppSyncFileClient::State::packet_error:
+			StopTransfer();
+			Reset();
+			break;
 		case AppSyncFileClient::State::file_complete:
+			CompleteTransfer(lastPacketRecieved + 1);
+			Reset();
 			break;
 	}
 
@@ -117,58 +126,34 @@ void AppSyncFileClient::Reset() {
 	state = AppSyncFileClient::State::stopped;
 }
 
-bool AppSyncFileClient::IsPacketValid(const uint8_t* bytes, uint16_t bytesLen, std::string& error) {
-	const uint16_t minPacketLen = 2; // packet num + checksum
-
-	bool valid = (bytesLen >= minPacketLen);
-	if(!valid) {
-		// TODO: invalid packet recieved. Abort?
-		error = "Bad len";
-		return false;
-	}
-
-	valid = (TBleFileUtils::CalculateChecksum(bytes, bytesLen) == bytes[bytesLen-1]);
-	if(!valid) {
-		// TODO: invalid chcksm recieved
-		error = "Bad Chcksm";
-		return false;
-	}
-
-	return valid;
-}
-
-std::vector<uint8_t> AppSyncFileClient::FormatCtrlPacket(bool ack, uint32_t chunk, uint8_t action, uint8_t reason) {
-	std::vector<uint8_t> frame;
-
-	frame.resize(WRITE_CTRL_PACKET_LENGTH);
-	frame[WRITE_CTRL_ACK_FIELD] = ack? ACK_CODE : NACK_CODE;
-	memcpy(&frame[WRITE_CTRL_PACKET_NUMBER_FIELD], &chunk, 4);
-	frame[WRITE_CTRL_ACTION_FIELD] = action;
-	frame[WRITE_CTRL_REASON_FIELD] = reason;
-	frame[WRITE_CTRL_CHCKSM_FIELD] = TBleFileUtils::CalculateChecksum(&frame[0], frame.size());
-
-	return frame;
-}
-
 void AppSyncFileClient::AuthorizeTransfer() {
-	auto frame = FormatCtrlPacket(true, 0, ACTION_START, FT_REASON_SUCCESS);
-
-	// TODO:
+	TAppSyncFTWCPacket packet;
+	packet.EncodeAuthorizeTransfer(frameToSend);
+	// TODO: Send Packet
 }
 
-void AppSyncFileClient::ContinueTransmission(bool ack, uint32_t chunk) {
-	auto frame = FormatCtrlPacket(ack, chunk, ACTION_CONTINUE, ack ? FT_REASON_SUCCESS : FT_DATA_NOT_SENT);
-	// TODO:
+void AppSyncFileClient::ContinueTransfer(uint32_t confirmedPacket) {
+	TAppSyncFTWCPacket packet;
+	packet.EncodeContinueTransfer(frameToSend, confirmedPacket);
+	// TODO: Send Packet
 }
 
-void AppSyncFileClient::StopTransfer(uint8_t reason) {
-	auto frame = FormatCtrlPacket(true, 0, ACTION_STOP, reason);
-	// TODO:
+void AppSyncFileClient::RollbackTransfer(uint32_t packetNumber) {
+	TAppSyncFTWCPacket packet;
+	packet.EncodeRollback(frameToSend, packetNumber);
+	// TODO: Send Packet
+}
+
+void AppSyncFileClient::StopTransfer() {
+	TAppSyncFTWCPacket packet;
+	packet.EncodeStopTransfer(frameToSend, TAppSyncFTWCPacket::Reason::success);
+	// TODO: Send Packet
 }
 
 void AppSyncFileClient::CompleteTransfer(uint32_t totalChunksRecieved) {
-	auto frame = FormatCtrlPacket(true, totalChunksRecieved, ACTION_COMPLETED, FT_REASON_SUCCESS);
-	// TODO:
+	TAppSyncFTWCPacket packet;
+	packet.EncodeTransferComplete(frameToSend, totalChunksRecieved);
+	// TODO: Send Packet
 }
 
 

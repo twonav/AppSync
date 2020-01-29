@@ -1,0 +1,6 @@
+set(SOURCES_files__MotorCompe__Tests__BLE__Linux__BtStack__Smartphone__AppSync__FTPackets
+	${CMAKE_CURRENT_SOURCE_DIR}/AppSyncFTNDPacketUnitTest.cpp
+	${CMAKE_CURRENT_SOURCE_DIR}/AppSyncFTNCPacketUnitTest.cpp
+	${CMAKE_CURRENT_SOURCE_DIR}/AppSyncFTWCPacketUnitTest.cpp
+	PARENT_SCOPE
+)

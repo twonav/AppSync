@@ -2,8 +2,6 @@
 #define AppSyncFileClientH
 
 #include "btstack/BtStackAdapter.h"
-#include "AppSyncFileUtils.h"
-
 #include <vector>
 #include <functional>
 #include <mutex>
@@ -16,6 +14,7 @@ namespace Ble {
 				stopped,
 				incoming_file_request,
 				recieving_file,
+				rollback,
 				packet_error,
 				file_complete
 			};
@@ -34,19 +33,17 @@ namespace Ble {
 			uint32_t incomingFileCrc32;
 			uint32_t incomingChunks;
 			std::vector<uint8_t> incomingFileBuffer;
-			uint32_t lastChunkRecieved;
-
+			uint32_t lastPacketRecieved;
+			std::vector<uint8_t> frameToSend;
 
 			static void OnWriteCtrlSent(void* context, bool success);
 
 			void Reset();
 
-			bool IsPacketValid(const uint8_t* bytes, uint16_t bytesLen, std::string& error);
-
-			std::vector<uint8_t> FormatCtrlPacket(bool ack, uint32_t chunk, uint8_t action, uint8_t reason);
 			void AuthorizeTransfer();
-			void ContinueTransmission(bool ack, uint32_t chunk);
-			void StopTransfer(uint8_t reason);
+			void ContinueTransfer(uint32_t confirmedPacket);
+			void RollbackTransfer(uint32_t packetNumber);
+			void StopTransfer();
 			void CompleteTransfer(uint32_t totalChunksRecieved);
 
 	};
