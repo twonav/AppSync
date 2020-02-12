@@ -1,0 +1,6 @@
+set(SOURCES_FTPackets
+	${CMAKE_CURRENT_SOURCE_DIR}/AppSyncFTNDPacketUnitTest.cpp
+	${CMAKE_CURRENT_SOURCE_DIR}/AppSyncFTNCPacketUnitTest.cpp
+	${CMAKE_CURRENT_SOURCE_DIR}/AppSyncFTWCPacketUnitTest.cpp
+	PARENT_SCOPE
+)
