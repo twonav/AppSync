@@ -20,6 +20,7 @@ namespace Ble {
 				success = 0x00,
 				not_sent = 0x01,
 				bad_format = 0x02,
+				rollback = 0x03,
 				unknown
 			};
 

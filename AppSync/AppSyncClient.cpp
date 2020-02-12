@@ -1,6 +1,7 @@
 #include "stdafx.h"
 #include "AppSyncClient.h"
 #include "registra_gps.h"
+#include "AppSyncClientComBtStack.h"
 #include <algorithm>
 
 #define SERVICE_UUID								"669A0C20-0008-37A8-E511-FCC84249EFA3" //"A3EF4942-C8FC-11E5-A837-0800200C9A66"
@@ -17,7 +18,9 @@ using namespace Ble;
 using namespace btstack;
 
 
-TAppSyncClient::TAppSyncClient() {
+TAppSyncClient::TAppSyncClient() :
+	fileClient(nullptr)
+{
 
 }
 
@@ -90,6 +93,8 @@ bool TAppSyncClient::Configure(TBtStackDevice* device, std::vector<TBleService>&
 			RegistraGPS("PERIPHERAL: Appsync: Found file transfer capability", true);
 			ftDataConfigured = device->registerNotification(*ftDataCharacteristic);
 			ftDataCtrlConfigured = device->registerNotification(*ftDataCtrlCharacteristic);
+			auto fileClientIface = std::unique_ptr<TAppSyncClientComBtStack>(new TAppSyncClientComBtStack(*device));
+			fileClient.reset(new TAppSyncFileClient(std::move(fileClientIface)));
 		}
 	}
 
@@ -117,16 +122,16 @@ bool TAppSyncClient::ProcessNotificationEvent(const TBtStackDeviceEvent::Notific
 			}
 			processed = true;
 		}
-		else if(found(ftDataCharacteristic.get())) {
+		else if(fileClient && found(ftDataCharacteristic.get())) {
 			RegistraGPS("FileClient Data Recieved", true);
 			//TODO;
-			fileClient.ProcessDataPacket(data->data, data->dataLength);
+			fileClient->ProcessDataPacket(data->data, data->dataLength);
 			processed = true;
 		}
-		else if(found(ftDataCtrlCharacteristic.get())) {
+		else if(fileClient && found(ftDataCtrlCharacteristic.get())) {
 			RegistraGPS("FileClient Data Ctrl Recieved", true);
 			//TODO;
-			fileClient.ProcessCtrlPacket(data->data, data->dataLength);
+			fileClient->ProcessCtrlPacket(data->data, data->dataLength);
 			processed = true;
 		}
 

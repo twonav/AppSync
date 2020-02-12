@@ -1,14 +1,14 @@
 #ifndef AppSyncFileClientH
 #define AppSyncFileClientH
 
-#include "btstack/BtStackAdapter.h"
 #include <vector>
 #include <functional>
 #include <mutex>
-
+#include <memory>
+#include "AppSyncClientComInterface.h"
 
 namespace Ble {
-	class AppSyncFileClient {
+	class TAppSyncFileClient {
 		public:
 			enum class State {
 				stopped,
@@ -19,16 +19,17 @@ namespace Ble {
 				file_complete
 			};
 
-			AppSyncFileClient();
-			~AppSyncFileClient();
+			TAppSyncFileClient(std::unique_ptr<TAppSyncClientComInterface> comIface);
+			~TAppSyncFileClient();
 
 			bool ProcessCtrlPacket(const uint8_t* bytes, uint16_t bytesLen);
 			bool ProcessDataPacket(const uint8_t* bytes, uint16_t bytesLen);
+			
 			void Update();
 
 		private:
+			std::unique_ptr<TAppSyncClientComInterface> comIface;
 			State state;
-
 			std::string incomingFileName;
 			uint32_t incomingFileCrc32;
 			uint32_t incomingChunks;
@@ -36,10 +37,11 @@ namespace Ble {
 			uint32_t lastPacketRecieved;
 			std::vector<uint8_t> frameToSend;
 
+			static void OnCtrlPacketRecieved(void* context, const uint8_t* bytes, uint16_t len);
+			static void OnDataPacketRecieved(void* context, const uint8_t* bytes, uint16_t len);
 			static void OnWriteCtrlSent(void* context, bool success);
 
 			void Reset();
-
 			void AuthorizeTransfer();
 			void ContinueTransfer(uint32_t confirmedPacket);
 			void RollbackTransfer(uint32_t packetNumber);

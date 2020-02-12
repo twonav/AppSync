@@ -22,6 +22,7 @@ namespace Ble {
 						const uint8_t* bytes,
 						const size_t bytesLen);
 
+			static const uint8_t NON_DATA_BYTES_NUM = 2;
 	};
 };
 

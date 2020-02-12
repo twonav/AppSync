@@ -33,7 +33,7 @@ namespace Ble
 			PushNotificationCb onPushNotification;
 			FileRecievedCb onFileRecieved;
 
-			AppSyncFileClient fileClient;
+			std::unique_ptr<TAppSyncFileClient> fileClient;
 
 			std::unique_ptr<btstack::TBleCharacteristic> nsNotificationCharacteristic;
 			std::unique_ptr<btstack::TBleCharacteristic> nsWriteCharacteristic;

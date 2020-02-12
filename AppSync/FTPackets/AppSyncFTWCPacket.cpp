@@ -39,10 +39,11 @@ void TAppSyncFTWCPacket::EncodeContinueTransfer(std::vector<uint8_t>& encodedPac
 
 void TAppSyncFTWCPacket::EncodeRollback(std::vector<uint8_t> &encodedPacket, uint32_t packetNumber)
 {
-	FormatCtrlPacket(encodedPacket, false,
+	FormatCtrlPacket(encodedPacket,
+					 false,
 					 packetNumber,
 					 Action::continue_transfer,
-					 Reason::bad_format);
+					 Reason::rollback);
 }
 
 void TAppSyncFTWCPacket::EncodeStopTransfer(std::vector<uint8_t>& encodedPacket,
@@ -85,6 +86,7 @@ bool TAppSyncFTWCPacket::Decode(FTWCData &data,
 			case 0x00: return Reason::success;
 			case 0x01: return Reason::not_sent;
 			case 0x02: return Reason::bad_format;
+			case 0x03: return Reason::rollback;
 			default:
 				return Reason::unknown;
 		}
@@ -95,7 +97,7 @@ bool TAppSyncFTWCPacket::Decode(FTWCData &data,
 					(packetBytes[WRITE_CTRL_CHCKSM_FIELD] == TAppSyncPacketChecksum().Calculate(packetBytes, bytesLen)));
 
 	if(decoded) {
-		data.ack = packetBytes[WRITE_CTRL_ACK_FIELD];
+		data.ack = packetBytes[WRITE_CTRL_ACK_FIELD] == ACK_CODE ? true : false;
 		data.action = getAction(packetBytes[WRITE_CTRL_ACTION_FIELD]);
 		data.reason = getReason(packetBytes[WRITE_CTRL_REASON_FIELD]);
 		memcpy(&data.packetNumber, &packetBytes[WRITE_CTRL_PACKET_NUMBER_FIELD], 4);
